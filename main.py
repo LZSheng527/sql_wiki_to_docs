@@ -6,6 +6,8 @@ import os
 import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # --- CONFIGURATION ---
 DOCUMENT_ID = "1p_eW5DW3mTNbQAuF92vwhmVLh8rdz87m8wzAaLE5lXM"
@@ -18,34 +20,36 @@ def fetch_wiki_data():
     ant_key = os.environ.get("SCRAPERANT_API_KEY")
     
     if not ant_key:
-        print("SCRAPERANT_API_KEY missing! Ensure it is set in GitHub Secrets.")
+        print("SCRAPERANT_API_KEY missing! Check GitHub Secrets.")
         return []
 
-    print("Fetching data from Wiki via ScraperAnt Proxy (Direct IP Mode)...")
+    # Create a persistent session with automatic retries
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=5,  # Try 5 times
+        backoff_factor=2,  # Wait longer between each try (2s, 4s, 8s...)
+        status_forcelist=[429, 500, 502, 503, 504], # Retry on server errors
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+    print("Fetching data from Wiki via ScraperAnt...")
     
     while True:
         target_url = "https://wiki.sql.com.my/api.php?action=query&generator=allpages&gaplimit=50&prop=revisions&rvprop=content&format=json&origin=*"
         if gap_continue:
             target_url += f"&gapcontinue={urllib.parse.quote(gap_continue)}"
         
-        # --- DNS BYPASS STRATEGY ---
-        # Using a known Cloudflare IP for api.scraperant.com to bypass GitHub DNS issues
-        proxy_url = "https://172.67.151.206/v2/general" 
+        proxy_url = "https://api.scraperant.com/v2/general"
         params = {"url": target_url, "x-api-key": ant_key, "browser": "false"}
-        custom_headers = {"Host": "api.scraperant.com"}
 
         try:
-            # verify=False is required when calling via IP to avoid SSL Mismatch errors
-            response = requests.get(
-                proxy_url, 
-                params=params, 
-                headers=custom_headers, 
-                timeout=60, 
-                verify=False
-            )
+            # Go back to using the clean domain name
+            response = session.get(proxy_url, params=params, timeout=60)
             
             if response.status_code != 200:
-                print(f"[!] Proxy Error: {response.status_code}. Response: {response.text[:100]}")
+                print(f"[!] Proxy Error: {response.status_code}. Details: {response.text[:100]}")
                 break
 
             data = response.json()
@@ -61,16 +65,12 @@ def fetch_wiki_data():
             else:
                 break
 
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as ce:
-            print(f"[!] Connection error: {ce}. Retrying in 10s...")
-            time.sleep(10)
-            continue 
         except Exception as e:
-            print(f"[!] Unexpected error during fetch: {e}")
-            break
+            print(f"[!] Error: {e}. Retrying loop...")
+            time.sleep(5)
+            continue
             
     return all_pages
-
 def sanitize_content(title, raw_content):
     # 1. Generate Friendly URL
     s2u = title.replace(" ", "_")
