@@ -16,37 +16,48 @@ def fetch_wiki_data():
     all_pages = []
     gap_continue = ""
     base_api_url = "https://wiki.sql.com.my/api.php?action=query&generator=allpages&gaplimit=50&prop=revisions&rvprop=content&format=json&origin=*"
+    
+    # Advanced headers to mimic a real Windows Chrome browser
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://wiki.sql.com.my/",  # Tells the server you came from their homepage
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Referer": "https://wiki.sql.com.my/",
         "Origin": "https://wiki.sql.com.my"
     }
 
     print("Fetching data from Wiki...")
+    
+    retry_count = 0
     while True:
         url = base_api_url + (f"&gapcontinue={urllib.parse.quote(gap_continue)}" if gap_continue else "")
-        try:
-            response = requests.get(url, headers=headers, timeout=30)
-
-            if response.status_code == 403:
-                print("Server returned 403. Trying to wait longer...")
-                time.sleep(10)
+        
+        response = requests.get(url, headers=headers, timeout=30)
+        
+        if response.status_code == 403:
+            print(f"[!] 403 Forbidden. Attempt {retry_count + 1}/2")
+            if retry_count < 1:
+                retry_count += 1
+                time.sleep(10) # Wait a bit before one last try
                 continue
-
-            data = response.json()
-            if "query" in data:
-                pages = data["query"]["pages"]
-                for pid in pages: all_pages.append(pages[pid])
-            if "continue" in data and "gapcontinue" in data["continue"]:
-                gap_continue = data["continue"]["gapcontinue"]
-                time.sleep(2) # Politeness delay
             else:
-                break
-        except Exception as e:
-            print(f"Error fetching: {e}")
+                print("Server is strictly blocking GitHub Actions. Stopping script.")
+                return [] # Exit gracefully
+
+        response.raise_for_status()
+        data = response.json()
+        
+        if "query" in data:
+            pages = data["query"]["pages"]
+            for pid in pages:
+                all_pages.append(pages[pid])
+        
+        if "continue" in data and "gapcontinue" in data["continue"]:
+            gap_continue = data["continue"]["gapcontinue"]
+            print(f"Batch success. Next: {gap_continue}")
+            time.sleep(2)
+        else:
             break
+            
     return all_pages
 
 def sanitize_content(title, raw_content):
