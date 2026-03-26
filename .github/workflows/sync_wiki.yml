@@ -1,32 +1,24 @@
 name: Weekly Wiki Sync
 
 on:
-  # 1. THE SCHEDULE (Every Saturday at 00:00 UTC)
   schedule:
     - cron: '0 0 * * 6' 
-  
-  # 2. THE MANUAL TRIGGER (Adds a "Run workflow" button in GitHub)
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.13'
-
       - name: Install Dependencies
-        run: |
-          pip install requests google-api-python-client google-auth
-
+        run: pip install requests google-api-python-client google-auth
       - name: Run Python Script
         env:
-          # This pulls your credentials from GitHub's secret storage
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SCRAPERANT_API_KEY: ${{ secrets.SCRAPERANT_API_KEY }}
         run: python main.py

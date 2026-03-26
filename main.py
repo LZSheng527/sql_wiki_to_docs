@@ -15,46 +15,39 @@ SERVICE_ACCOUNT_FILE = 'credentials.json'
 def fetch_wiki_data():
     all_pages = []
     gap_continue = ""
-    base_api_url = "https://wiki.sql.com.my/api.php?action=query&generator=allpages&gaplimit=50&prop=revisions&rvprop=content&format=json&origin=*"
+    ant_key = os.environ.get("SCRAPERANT_API_KEY")
     
-    # Advanced headers to mimic a real Windows Chrome browser
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Referer": "https://wiki.sql.com.my/",
-        "Origin": "https://wiki.sql.com.my"
-    }
+    if not ant_key:
+        print("ScraperAnt API Key missing! Using direct connection (might 403 on GitHub).")
 
     print("Fetching data from Wiki...")
-    
-    retry_count = 0
     while True:
-        url = base_api_url + (f"&gapcontinue={urllib.parse.quote(gap_continue)}" if gap_continue else "")
+        target_url = "https://wiki.sql.com.my/api.php?action=query&generator=allpages&gaplimit=50&prop=revisions&rvprop=content&format=json&origin=*"
+        if gap_continue:
+            target_url += f"&gapcontinue={urllib.parse.quote(gap_continue)}"
         
-        response = requests.get(url, headers=headers, timeout=30)
-        
-        if response.status_code == 403:
-            print(f"[!] 403 Forbidden. Attempt {retry_count + 1}/2")
-            if retry_count < 1:
-                retry_count += 1
-                time.sleep(10) # Wait a bit before one last try
-                continue
-            else:
-                print("Server is strictly blocking GitHub Actions. Stopping script.")
-                return [] # Exit gracefully
+        # Use ScraperAnt if Key is available, otherwise try direct
+        if ant_key:
+            proxy_url = "https://api.scraperant.com/v2/general"
+            params = {"url": target_url, "x-api-key": ant_key, "browser": "false"}
+            response = requests.get(proxy_url, params=params, timeout=60)
+        else:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(target_url, headers=headers, timeout=30)
 
-        response.raise_for_status()
+        if response.status_code != 200:
+            print(f"[!] Fetch Error: {response.status_code}")
+            break
+
         data = response.json()
-        
         if "query" in data:
             pages = data["query"]["pages"]
-            for pid in pages:
-                all_pages.append(pages[pid])
-        
+            for pid in pages: all_pages.append(pages[pid])
+            print(f"  > Collected {len(pages)} pages.")
+
         if "continue" in data and "gapcontinue" in data["continue"]:
             gap_continue = data["continue"]["gapcontinue"]
-            print(f"Batch success. Next: {gap_continue}")
-            time.sleep(2)
+            time.sleep(1)
         else:
             break
             
@@ -72,7 +65,7 @@ def sanitize_content(title, raw_content):
         sanitized = re.sub(r'\[\[File:[^\]]*\]\]', '(PICTURE)', sanitized)
         lines = [l for l in sanitized.split("\n") if not any(l.strip().startswith(x) for x in ["{|", "|-", "|}"])]
         sanitized = "\n".join(lines)
-        replacements = [(r'\{\|', ""), (r'\|\}', ""), (r'\|-', ""), (r'\| ', ""), (r'\|\|', " "), (r'==', " "), (r'!', ""), (r'#top\|\[top\]', ""), (r"'''", ""), (r"''", ""), (r'\[\[', ""), (r'\]\]', ""), (r'&nbsp;', " ")]
+        replacements = [(r'\{\|', ""), (r'\|\}', ""), (r'\|-', ""), (r'\| ', ""), (r'\|\|', " "), (r'==', " "), (r'!', ""), (r"'''", ""), (r"''", ""), (r'\[\[', ""), (r'\]\]', ""), (r'&nbsp;', " ")]
         for pattern, rep in replacements: sanitized = re.sub(pattern, rep, sanitized)
         sanitized = "\n".join([l for l in sanitized.split("\n") if l.strip() != ""])
 
@@ -91,7 +84,6 @@ def sanitize_content(title, raw_content):
 
 def push_to_docs(full_text):
     print("Connecting to Google Docs...")
-    # --- CREDENTIAL LOGIC ---
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
     if creds_json:
         info = json.loads(creds_json)
@@ -103,6 +95,11 @@ def push_to_docs(full_text):
     doc = service.documents().get(documentId=DOCUMENT_ID).execute()
     current_end_index = doc.get('body').get('content')[-1].get('endIndex') - 1
 
+    # Safety check: Never try to insert an empty string
+    if not full_text.strip():
+        print("No content to insert. Skipping update.")
+        return
+
     requests = []
     if current_end_index > 1:
         requests.append({'deleteContentRange': {'range': {'startIndex': 1, 'endIndex': current_end_index}}})
@@ -113,5 +110,8 @@ def push_to_docs(full_text):
 
 if __name__ == "__main__":
     pages = fetch_wiki_data()
-    all_content = "".join([sanitize_content(p.get('title', ''), p.get('revisions', [{}])[0].get('*', '')) for p in pages])
-    push_to_docs(all_content)
+    if not pages:
+        print("No data fetched from Wiki. Ending process.")
+    else:
+        all_content = "".join([sanitize_content(p.get('title', ''), p.get('revisions', [{}])[0].get('*', '')) for p in pages])
+        push_to_docs(all_content)
