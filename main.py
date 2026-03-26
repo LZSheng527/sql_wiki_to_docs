@@ -18,32 +18,38 @@ def fetch_wiki_data():
     apikey = os.environ.get("ZENROWS_API_KEY")
     
     if not apikey:
-        print("ZENROWS_API_KEY missing! Check GitHub Secrets.")
+        print("ZENROWS_API_KEY missing!")
         return []
 
     print("Fetching data from Wiki via ZenRows Proxy...")
     
     while True:
-        target_url = "https://wiki.sql.com.my/api.php?action=query&generator=allpages&gaplimit=50&prop=revisions&rvprop=content&format=json&origin=*"
+        # 1. Build the Wiki API URL
+        wiki_url = "https://wiki.sql.com.my/api.php?action=query&generator=allpages&gaplimit=50&prop=revisions&rvprop=content&format=json&origin=*"
         if gap_continue:
-            target_url += f"&gapcontinue={urllib.parse.quote(gap_continue)}"
+            wiki_url += f"&gapcontinue={urllib.parse.quote(gap_continue)}"
         
-        # ZenRows API structure
+        # 2. ZenRows Request
         proxy_url = "https://api.zenrows.com/v1/"
+        
+        # We pass the wiki_url as a parameter; requests.get handles the encoding for us
         params = {
             "apikey": apikey,
-            "url": target_url,
+            "url": wiki_url,
+            "premium_proxy": "true", # Adding this helps bypass stricter firewalls
+            "proxy_country": "my"    # Optional: Try to look like you're in Malaysia
         }
 
         try:
             response = requests.get(proxy_url, params=params, timeout=60)
             
-            if response.status_code == 403:
-                print("[!] ZenRows is also blocked or key is invalid. Stopping.")
+            if response.status_code == 422:
+                print(f"[!] ZenRows 422 Error: {response.text}")
+                # If it still fails, we try a simpler URL version
                 break
                 
             if response.status_code != 200:
-                print(f"[!] Fetch Error: {response.status_code}")
+                print(f"[!] Fetch Error: {response.status_code}. Details: {response.text[:100]}")
                 break
 
             data = response.json()
@@ -59,14 +65,10 @@ def fetch_wiki_data():
                 break
 
         except Exception as e:
-            print(f"[!] Connection Error: {e}. Retrying in 10s...")
-            time.sleep(10)
-            continue
+            print(f"[!] Error: {e}")
+            break
             
     return all_pages
-
-# ... (Keep your sanitize_content and push_to_docs functions exactly as they were) ...
-
 
 
 def sanitize_content(title, raw_content):
