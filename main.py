@@ -18,72 +18,100 @@ def fetch_wiki_data():
     ant_key = os.environ.get("SCRAPERANT_API_KEY")
     
     if not ant_key:
-        print("ScraperAnt API Key missing! Using direct connection (might 403 on GitHub).")
+        print("SCRAPERANT_API_KEY missing! Ensure it is set in GitHub Secrets.")
+        return []
 
-    print("Fetching data from Wiki...")
+    print("Fetching data from Wiki via ScraperAnt Proxy...")
+    
     while True:
         target_url = "https://wiki.sql.com.my/api.php?action=query&generator=allpages&gaplimit=50&prop=revisions&rvprop=content&format=json&origin=*"
         if gap_continue:
             target_url += f"&gapcontinue={urllib.parse.quote(gap_continue)}"
         
-        # Use ScraperAnt if Key is available, otherwise try direct
-        if ant_key:
-            proxy_url = "https://api.scraperant.com/v2/general"
-            params = {"url": target_url, "x-api-key": ant_key, "browser": "false"}
+        proxy_url = "https://api.scraperant.com/v2/general"
+        params = {"url": target_url, "x-api-key": ant_key, "browser": "false"}
+
+        try:
+            # Request through Proxy
             response = requests.get(proxy_url, params=params, timeout=60)
-        else:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(target_url, headers=headers, timeout=30)
+            
+            if response.status_code != 200:
+                print(f"[!] Proxy Error: {response.status_code}. Response: {response.text[:100]}")
+                break
 
-        if response.status_code != 200:
-            print(f"[!] Fetch Error: {response.status_code}")
-            break
+            data = response.json()
+            if "query" in data:
+                pages = data["query"]["pages"]
+                for pid in pages:
+                    all_pages.append(pages[pid])
+                print(f"  > Collected {len(all_pages)} pages total...")
 
-        data = response.json()
-        if "query" in data:
-            pages = data["query"]["pages"]
-            for pid in pages: all_pages.append(pages[pid])
-            print(f"  > Collected {len(pages)} pages.")
+            if "continue" in data and "gapcontinue" in data["continue"]:
+                gap_continue = data["continue"]["gapcontinue"]
+                time.sleep(1) # Small delay to be safe
+            else:
+                break
 
-        if "continue" in data and "gapcontinue" in data["continue"]:
-            gap_continue = data["continue"]["gapcontinue"]
-            time.sleep(1)
-        else:
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as ce:
+            print(f"[!] Network/DNS error: {ce}. Retrying in 10s...")
+            time.sleep(10)
+            continue # Try the same batch again
+        except Exception as e:
+            print(f"[!] Unexpected error during fetch: {e}")
             break
             
     return all_pages
 
 def sanitize_content(title, raw_content):
+    # 1. Generate Friendly URL
     s2u = title.replace(" ", "_")
-    enc = urllib.parse.quote(s2u).replace("%5F", "_").replace("%2E", ".").replace("%2D", "-").replace("%28", "(").replace("%29", ")").replace("%2F", "/").replace("%3A", ":")
+    enc = urllib.parse.quote(s2u).replace("%5F", "_").replace("%2E", ".").replace("%2D", "-") \
+                                 .replace("%28", "(").replace("%29", ")").replace("%2F", "/") \
+                                 .replace("%3A", ":")
     final_url = WIKI_LINK_BASE + enc
 
+    # 2. Sanitization Logic
     sanitized = raw_content
     if sanitized:
         sanitized = re.sub(r'<br\s*/?>', '\n', sanitized, flags=re.IGNORECASE)
         sanitized = re.sub(r'<[^>]*>', '', sanitized)
         sanitized = re.sub(r'\[\[File:[^\]]*\]\]', '(PICTURE)', sanitized)
+        
         lines = [l for l in sanitized.split("\n") if not any(l.strip().startswith(x) for x in ["{|", "|-", "|}"])]
         sanitized = "\n".join(lines)
-        replacements = [(r'\{\|', ""), (r'\|\}', ""), (r'\|-', ""), (r'\| ', ""), (r'\|\|', " "), (r'==', " "), (r'!', ""), (r"'''", ""), (r"''", ""), (r'\[\[', ""), (r'\]\]', ""), (r'&nbsp;', " ")]
-        for pattern, rep in replacements: sanitized = re.sub(pattern, rep, sanitized)
+        
+        replacements = [
+            (r'\{\|', ""), (r'\|\}', ""), (r'\|-', ""), (r'\| ', ""), (r'\|\|', " "),
+            (r'==', " "), (r'!', ""), (r'#top\|\[top\]', ""), (r"'''", ""), (r"''", ""), 
+            (r'\[\[', ""), (r'\]\]', ""), (r'&nbsp;', " ")
+        ]
+        for pattern, replacement in replacements:
+            sanitized = re.sub(pattern, replacement, sanitized)
+        
         sanitized = "\n".join([l for l in sanitized.split("\n") if l.strip() != ""])
 
+    # 3. 25k Rule / Redirect Logic
+    is_redirect = raw_content.strip().startswith("#REDIRECT")
     char_count = len(sanitized) if sanitized else 0
-    if raw_content.strip().startswith("#REDIRECT"):
+    
+    if is_redirect:
         match = re.search(r'\[\[(.*?)\]\]', raw_content)
         target = match.group(1).replace(" ", "_") if match else ""
         final_body = f"Redirect to {WIKI_LINK_BASE}{target}"
+    elif char_count == 0:
+        final_body = "*(No content)*"
     elif char_count > 25000:
-        hdrs = [l for l in raw_content.split("\n") if l.strip().startswith("==")]
-        final_body = "**Note: Content >25k. Headings only:**\n" + "\n".join(hdrs) if hdrs else "**Note: Content >25k.**"
+        headers = [l for l in raw_content.split("\n") if l.strip().startswith("==")]
+        final_body = "**Note: Content >25k. Headings only:**\n" + "\n".join(headers) if headers else "**Note: Content >25k.**"
     else:
-        final_body = sanitized if sanitized else "*(No content)*"
+        final_body = sanitized
 
     return f"### {title}\n**Wiki Link:** {final_url}\n\n**Instructions:**\n{final_body}\n\n" + ("-"*30) + "\n\n"
 
 def push_to_docs(full_text):
     print("Connecting to Google Docs...")
+    
+    # Load Credentials from Secret (GitHub) or File (Local)
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
     if creds_json:
         info = json.loads(creds_json)
@@ -92,26 +120,49 @@ def push_to_docs(full_text):
         creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=['https://www.googleapis.com/auth/documents'])
     
     service = build('docs', 'v1', credentials=creds)
+    
+    # Get current doc length
     doc = service.documents().get(documentId=DOCUMENT_ID).execute()
     current_end_index = doc.get('body').get('content')[-1].get('endIndex') - 1
 
-    # Safety check: Never try to insert an empty string
+    # Safety check: if full_text is empty, don't clear the doc
     if not full_text.strip():
-        print("No content to insert. Skipping update.")
+        print("Warning: Content is empty. Skipping update to protect the Document.")
         return
 
-    requests = []
+    requests_list = []
+    # Clear existing content
     if current_end_index > 1:
-        requests.append({'deleteContentRange': {'range': {'startIndex': 1, 'endIndex': current_end_index}}})
-    requests.append({'insertText': {'location': {'index': 1}, 'text': full_text}})
+        requests_list.append({
+            'deleteContentRange': {
+                'range': {'startIndex': 1, 'endIndex': current_end_index}
+            }
+        })
+    
+    # Insert new content
+    requests_list.append({
+        'insertText': {
+            'location': {'index': 1}, 
+            'text': full_text
+        }
+    })
 
-    service.documents().batchUpdate(documentId=DOCUMENT_ID, body={'requests': requests}).execute()
-    print("Update complete!")
+    try:
+        service.documents().batchUpdate(documentId=DOCUMENT_ID, body={'requests': requests_list}).execute()
+        print(f"Success! Updated Doc with {len(full_text)} characters.")
+    except Exception as e:
+        print(f"Error during Google Docs BatchUpdate: {e}")
 
 if __name__ == "__main__":
-    pages = fetch_wiki_data()
-    if not pages:
-        print("No data fetched from Wiki. Ending process.")
+    raw_pages = fetch_wiki_data()
+    
+    if not raw_pages:
+        print("No pages were fetched. Check ScraperAnt logs/credits.")
     else:
-        all_content = "".join([sanitize_content(p.get('title', ''), p.get('revisions', [{}])[0].get('*', '')) for p in pages])
+        all_content = ""
+        for page in raw_pages:
+            title = page.get('title', 'Untitled')
+            content = page.get('revisions', [{}])[0].get('*', '')
+            all_content += sanitize_content(title, content)
+        
         push_to_docs(all_content)
