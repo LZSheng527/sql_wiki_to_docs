@@ -4,6 +4,7 @@ import urllib.parse
 import time
 import os
 import json
+from datetime import datetime
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -24,30 +25,21 @@ def fetch_wiki_data():
     print("Fetching data from Wiki via ZenRows Proxy...")
     
     while True:
-        # 1. Build the Wiki API URL
         wiki_url = "https://wiki.sql.com.my/api.php?action=query&generator=allpages&gaplimit=50&prop=revisions&rvprop=content&format=json&origin=*"
         if gap_continue:
             wiki_url += f"&gapcontinue={urllib.parse.quote(gap_continue)}"
         
-        # 2. ZenRows Request
         proxy_url = "https://api.zenrows.com/v1/"
-        
-        # We pass the wiki_url as a parameter; requests.get handles the encoding for us
         params = {
             "apikey": apikey,
             "url": wiki_url,
-            "premium_proxy": "true", # Adding this helps bypass stricter firewalls
-            "proxy_country": "my"    # Optional: Try to look like you're in Malaysia
+            "premium_proxy": "true",
+            "proxy_country": "my"
         }
 
         try:
             response = requests.get(proxy_url, params=params, timeout=60)
             
-            if response.status_code == 422:
-                print(f"[!] ZenRows 422 Error: {response.text}")
-                # If it still fails, we try a simpler URL version
-                break
-                
             if response.status_code != 200:
                 print(f"[!] Fetch Error: {response.status_code}. Details: {response.text[:100]}")
                 break
@@ -70,9 +62,7 @@ def fetch_wiki_data():
             
     return all_pages
 
-
 def sanitize_content(title, raw_content):
-    # Friendly URL generation
     s2u = title.replace(" ", "_")
     enc = urllib.parse.quote(s2u).replace("%5F", "_").replace("%2E", ".").replace("%2D", "-") \
                                  .replace("%28", "(").replace("%29", ")").replace("%2F", "/") \
@@ -117,6 +107,12 @@ def sanitize_content(title, raw_content):
 
 def push_to_docs(full_text):
     print("Connecting to Google Docs...")
+    
+    # Prepend the Last Updated Timestamp
+    timestamp = datetime.now().strftime("%d-%b-%Y %H:%M")
+    header = f"Last Updated: {timestamp}\n---\n\n"
+    final_text = header + full_text
+
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
     if creds_json:
         info = json.loads(creds_json)
@@ -132,15 +128,15 @@ def push_to_docs(full_text):
         print("Warning: Content empty. Skipping update.")
         return
 
-    requests_list = [
-        {'deleteContentRange': {'range': {'startIndex': 1, 'endIndex': current_end_index}}} if current_end_index > 1 else None,
-        {'insertText': {'location': {'index': 1}, 'text': full_text}}
-    ]
-    requests_list = [r for r in requests_list if r]
+    requests_list = []
+    if current_end_index > 1:
+        requests_list.append({'deleteContentRange': {'range': {'startIndex': 1, 'endIndex': current_end_index}}})
+    
+    requests_list.append({'insertText': {'location': {'index': 1}, 'text': final_text}})
 
     try:
         service.documents().batchUpdate(documentId=DOCUMENT_ID, body={'requests': requests_list}).execute()
-        print(f"Success! Updated Doc with {len(full_text)} characters.")
+        print(f"Success! Updated Doc with {len(final_text)} characters.")
     except Exception as e:
         print(f"Error during Google Docs Update: {e}")
 
@@ -154,4 +150,5 @@ if __name__ == "__main__":
             title = page.get('title', 'Untitled')
             content = page.get('revisions', [{}])[0].get('*', '')
             all_content += sanitize_content(title, content)
+        
         push_to_docs(all_content)
