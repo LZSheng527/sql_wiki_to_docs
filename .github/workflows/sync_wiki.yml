@@ -20,5 +20,5 @@ jobs:
       - name: Run Python Script
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          SCRAPERANT_API_KEY: ${{ secrets.SCRAPERANT_API_KEY }}
+          ZENROWS_API_KEY: ${{ secrets.ZENROWS_API_KEY }}
         run: python main.py

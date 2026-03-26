@@ -4,23 +4,8 @@ import urllib.parse
 import time
 import os
 import json
-import socket
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-
-# --- DNS OVERRIDE (THE NUCLEAR OPTION) ---
-# This forces the GitHub runner to find ScraperAnt even if its DNS is broken.
-def override_dns(domain, ip):
-    old_getaddrinfo = socket.getaddrinfo
-    def new_getaddrinfo(*args, **kwargs):
-        if args[0] == domain:
-            # We force the lookup to return the hardcoded IP
-            return old_getaddrinfo(ip, *args[1:], **kwargs)
-        return old_getaddrinfo(*args, **kwargs)
-    socket.getaddrinfo = new_getaddrinfo
-
-# 172.67.151.206 is a verified Cloudflare IP for api.scraperant.com
-override_dns("api.scraperant.com", "172.67.151.206")
 
 # --- CONFIGURATION ---
 DOCUMENT_ID = "1p_eW5DW3mTNbQAuF92vwhmVLh8rdz87m8wzAaLE5lXM"
@@ -30,28 +15,35 @@ SERVICE_ACCOUNT_FILE = 'credentials.json'
 def fetch_wiki_data():
     all_pages = []
     gap_continue = ""
-    ant_key = os.environ.get("SCRAPERANT_API_KEY")
+    apikey = os.environ.get("ZENROWS_API_KEY")
     
-    if not ant_key:
-        print("SCRAPERANT_API_KEY missing! Check GitHub Secrets.")
+    if not apikey:
+        print("ZENROWS_API_KEY missing! Check GitHub Secrets.")
         return []
 
-    print("Fetching data from Wiki via ScraperAnt (DNS Override Active)...")
+    print("Fetching data from Wiki via ZenRows Proxy...")
     
     while True:
         target_url = "https://wiki.sql.com.my/api.php?action=query&generator=allpages&gaplimit=50&prop=revisions&rvprop=content&format=json&origin=*"
         if gap_continue:
             target_url += f"&gapcontinue={urllib.parse.quote(gap_continue)}"
         
-        proxy_url = "https://api.scraperant.com/v2/general"
-        params = {"url": target_url, "x-api-key": ant_key, "browser": "false"}
+        # ZenRows API structure
+        proxy_url = "https://api.zenrows.com/v1/"
+        params = {
+            "apikey": apikey,
+            "url": target_url,
+        }
 
         try:
-            # We use the standard domain name here because override_dns handles the IP mapping
-            response = requests.get(proxy_url, params=params, timeout=45)
+            response = requests.get(proxy_url, params=params, timeout=60)
             
+            if response.status_code == 403:
+                print("[!] ZenRows is also blocked or key is invalid. Stopping.")
+                break
+                
             if response.status_code != 200:
-                print(f"[!] Proxy Error: {response.status_code}. Details: {response.text[:100]}")
+                print(f"[!] Fetch Error: {response.status_code}")
                 break
 
             data = response.json()
@@ -63,7 +55,6 @@ def fetch_wiki_data():
 
             if "continue" in data and "gapcontinue" in data["continue"]:
                 gap_continue = data["continue"]["gapcontinue"]
-                time.sleep(1)
             else:
                 break
 
@@ -73,6 +64,10 @@ def fetch_wiki_data():
             continue
             
     return all_pages
+
+# ... (Keep your sanitize_content and push_to_docs functions exactly as they were) ...
+
+
 
 def sanitize_content(title, raw_content):
     # Friendly URL generation
