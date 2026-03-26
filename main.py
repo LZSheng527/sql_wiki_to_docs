@@ -21,19 +21,28 @@ def fetch_wiki_data():
         print("SCRAPERANT_API_KEY missing! Ensure it is set in GitHub Secrets.")
         return []
 
-    print("Fetching data from Wiki via ScraperAnt Proxy...")
+    print("Fetching data from Wiki via ScraperAnt Proxy (Direct IP Mode)...")
     
     while True:
         target_url = "https://wiki.sql.com.my/api.php?action=query&generator=allpages&gaplimit=50&prop=revisions&rvprop=content&format=json&origin=*"
         if gap_continue:
             target_url += f"&gapcontinue={urllib.parse.quote(gap_continue)}"
         
-        proxy_url = "https://api.scraperant.com/v2/general"
+        # --- DNS BYPASS STRATEGY ---
+        # Using a known Cloudflare IP for api.scraperant.com to bypass GitHub DNS issues
+        proxy_url = "https://172.67.151.206/v2/general" 
         params = {"url": target_url, "x-api-key": ant_key, "browser": "false"}
+        custom_headers = {"Host": "api.scraperant.com"}
 
         try:
-            # Request through Proxy
-            response = requests.get(proxy_url, params=params, timeout=60)
+            # verify=False is required when calling via IP to avoid SSL Mismatch errors
+            response = requests.get(
+                proxy_url, 
+                params=params, 
+                headers=custom_headers, 
+                timeout=60, 
+                verify=False
+            )
             
             if response.status_code != 200:
                 print(f"[!] Proxy Error: {response.status_code}. Response: {response.text[:100]}")
@@ -48,14 +57,14 @@ def fetch_wiki_data():
 
             if "continue" in data and "gapcontinue" in data["continue"]:
                 gap_continue = data["continue"]["gapcontinue"]
-                time.sleep(1) # Small delay to be safe
+                time.sleep(1)
             else:
                 break
 
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as ce:
-            print(f"[!] Network/DNS error: {ce}. Retrying in 10s...")
+            print(f"[!] Connection error: {ce}. Retrying in 10s...")
             time.sleep(10)
-            continue # Try the same batch again
+            continue 
         except Exception as e:
             print(f"[!] Unexpected error during fetch: {e}")
             break
